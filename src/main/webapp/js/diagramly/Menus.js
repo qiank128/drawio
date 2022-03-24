@@ -8,12 +8,12 @@
 	var mxPopupMenuShowMenu = mxPopupMenu.prototype.showMenu;
 	mxPopupMenu.prototype.showMenu = function()
 	{
-		mxPopupMenuShowMenu.apply(this, arguments);
-		
 		this.div.style.overflowY = 'auto';
 		this.div.style.overflowX = 'hidden';
 		var h0 = Math.max(document.body.clientHeight, document.documentElement.clientHeight);
-		this.div.style.maxHeight = (h0 - 10) + 'px';
+		this.div.style.maxHeight = (h0 - (EditorUi.isElectronApp? 50 : 10)) + 'px'; //In Electron and without titlebar, the top item is not selectable
+
+		mxPopupMenuShowMenu.apply(this, arguments);
 	};
 	
 	Menus.prototype.createHelpLink = function(href)
@@ -85,10 +85,78 @@
 		editorUi.actions.addAction('new...', function()
 		{
 			var compact = editorUi.isOffline();
+			
+			if (!compact && urlParams['newTempDlg'] == '1' && editorUi.mode == App.MODE_GOOGLE)
+			{
+				function driveObjToTempDlg(item)
+				{
+					return {id: item.id, isExt: true, url: item.downloadUrl, title: item.title, imgUrl: item.thumbnailLink,
+							changedBy: item.lastModifyingUserName, lastModifiedOn: item.modifiedDate}
+				};
+				
+				var tempDlg = new TemplatesDialog(editorUi, function(templateXml, title, infoObj)
+				{
+					var templateLibs = infoObj.libs, templateClibs = infoObj.clibs;
+
+					editorUi.pickFolder(editorUi.mode, function(folderId)
+					{
+						editorUi.createFile(title, templateXml, (templateLibs != null &&
+							templateLibs.length > 0) ? templateLibs : null, null, function()
+						{
+							editorUi.hideDialog();
+						}, null, folderId, null, (templateClibs != null &&
+							templateClibs.length > 0) ? templateClibs : null);
+					}, editorUi.stateArg == null ||
+						editorUi.stateArg.folderId == null);
+					
+				}, null, null, null, 'user', function(callback, error, username)
+				{
+					var oneWeek = new Date();
+					oneWeek.setDate(oneWeek.getDate() - 7);
+					
+					editorUi.drive.listFiles(null, oneWeek, username? true : false, function(resp)
+					{
+						var results = [];
+						
+						for (var i = 0; i < resp.items.length; i++)
+						{
+							results.push(driveObjToTempDlg(resp.items[i]));
+						}
+						
+						callback(results);
+					}, error)
+				}, function(str, callback, error, username)
+				{
+					editorUi.drive.listFiles(str, null, username? true : false, function(resp)
+					{
+						var results = [];
+						
+						for (var i = 0; i < resp.items.length; i++)
+						{
+							results.push(driveObjToTempDlg(resp.items[i]));
+						}
+						
+						callback(results);
+					}, error)
+				}, function(obj, callback, error)
+				{
+					editorUi.drive.getFile(obj.id, function(file)
+					{
+						callback(file.data);
+					}, error);
+				}, null, null, false, false);
+				
+				editorUi.showDialog(tempDlg.container, window.innerWidth, window.innerHeight, true, false, null, false, true);
+
+				return;	
+			};
+			
 			var dlg = new NewDialog(editorUi, compact, !(editorUi.mode == App.MODE_DEVICE && 'chooseFileSystemEntries' in window));
 
-			editorUi.showDialog(dlg.container, (compact) ? 350 : 620, (compact) ? 70 : 440, true, true, function(cancel)
+			editorUi.showDialog(dlg.container, (compact) ? 350 : 620, (compact) ? 70 : 460, true, true, function(cancel)
 			{
+				editorUi.sidebar.hideTooltip();
+				
 				if (cancel && editorUi.getCurrentFile() == null)
 				{
 					editorUi.showSplash();
@@ -100,25 +168,57 @@
 
 		editorUi.actions.put('insertTemplate', new Action(mxResources.get('template') + '...', function()
 		{
-			var dlg = new NewDialog(editorUi, null, false, function(xml)
+			if (graph.isEnabled() && !graph.isCellLocked(graph.getDefaultParent()))
 			{
-				editorUi.hideDialog();
-				
-				if (xml != null)
+				var dlg = new NewDialog(editorUi, null, false, function(xml)
 				{
-					var insertPoint = editorUi.editor.graph.getFreeInsertPoint();
-					graph.setSelectionCells(editorUi.importXml(xml,
-						Math.max(insertPoint.x, 20),
-						Math.max(insertPoint.y, 20),
-						true, null, null, true));
-					graph.scrollCellToVisible(graph.getSelectionCell());
-				}
-			}, null, null, null, null, null, null, null, null, null, null,
-				false, mxResources.get('insert'));
-
-			editorUi.showDialog(dlg.container, 620, 440, true, true);
+					editorUi.hideDialog();
+					
+					if (xml != null)
+					{
+						var insertPoint = editorUi.editor.graph.getFreeInsertPoint();
+						graph.setSelectionCells(editorUi.importXml(xml,
+							Math.max(insertPoint.x, 20),
+							Math.max(insertPoint.y, 20),
+							true, null, null, true));
+						graph.scrollCellToVisible(graph.getSelectionCell());
+					}
+				}, null, null, null, null, null, null, null, null, null, null,
+					false, mxResources.get('insert'));
+	
+				editorUi.showDialog(dlg.container, 620, 460, true, true, function()
+				{
+					editorUi.sidebar.hideTooltip();
+				});
+				
+				dlg.init();
+			}
 		})).isEnabled = isGraphEnabled;
 		
+		var shareCursorAction = editorUi.actions.addAction('shareCursor', function()
+		{
+			editorUi.setShareCursorPosition(!editorUi.isShareCursorPosition());;
+		});
+		
+		shareCursorAction.setToggleAction(true);
+		shareCursorAction.setSelectedCallback(function() { return editorUi.isShareCursorPosition(); });
+
+		// Adds context menu items
+		var menuCreatePopupMenu = Menus.prototype.createPopupMenu;
+		
+		Menus.prototype.createPopupMenu = function(menu, cell, evt)
+		{
+			menuCreatePopupMenu.apply(this, arguments);
+
+			var file = editorUi.getCurrentFile();
+
+			if (graph.isEnabled() && (urlParams['embed'] != '1' || urlParams['embedRT'] == '1') && graph.isSelectionEmpty() &&
+				file != null && file.isRealtimeEnabled() && file.isRealtimeSupported())
+			{
+				this.addMenuItems(menu, ['-', 'shareCursor'], null, evt);
+			}
+		};
+
 		var pointAction = editorUi.actions.addAction('points', function()
 		{
 			editorUi.editor.graph.view.setUnit(mxConstants.POINTS);
@@ -143,9 +243,17 @@
 		mmAction.setToggleAction(true);
 		mmAction.setSelectedCallback(function() { return editorUi.editor.graph.view.unit == mxConstants.MILLIMETERS; });
 
+		var meterAction = editorUi.actions.addAction('meters', function()
+		{
+			editorUi.editor.graph.view.setUnit(mxConstants.METERS);
+		});
+		
+		meterAction.setToggleAction(true);
+		meterAction.setSelectedCallback(function() { return editorUi.editor.graph.view.unit == mxConstants.METERS; });
+
 		this.put('units', new Menu(mxUtils.bind(this, function(menu, parent)
 		{
-			this.addMenuItems(menu, ['points', /*'inches',*/ 'millimeters'], parent);
+			this.addMenuItems(menu, ['points', 'inches', 'millimeters', 'meters'], parent);
 		})));
 		
 		var rulerAction = editorUi.actions.addAction('ruler', function()
@@ -171,18 +279,32 @@
 		
         var fullscreenAction = editorUi.actions.addAction('fullscreen', function()
 		{
-			if (document.fullscreenElement == null)
+			if (urlParams['embedInline'] == '1')
 			{
-				document.body.requestFullscreen();
+				editorUi.setInlineFullscreen(!Editor.inlineFullscreen);
 			}
 			else
 			{
-				document.exitFullscreen();
+				if (document.fullscreenElement == null)
+				{
+					document.body.requestFullscreen();
+				}
+				else
+				{
+					document.exitFullscreen();
+				}
 			}
 		});
-		fullscreenAction.visible = document.fullscreenEnabled && document.body.requestFullscreen != null;
+		fullscreenAction.visible = urlParams['embedInline'] == '1' ||
+			(window == window.top && document.fullscreenEnabled &&
+			document.body.requestFullscreen != null);
 		fullscreenAction.setToggleAction(true);
-		fullscreenAction.setSelectedCallback(function() { return document.fullscreenElement != null; });
+		fullscreenAction.setSelectedCallback(function()
+		{
+			return urlParams['embedInline'] == '1' ? 
+				Editor.inlineFullscreen :
+				document.fullscreenElement != null;
+		});
 		
 		editorUi.actions.addAction('properties...', function()
 		{
@@ -199,7 +321,8 @@
 				{
 					if (this.freehandWindow == null)
 					{
-						this.freehandWindow = new FreehandWindow(editorUi, document.body.offsetWidth - 420, 102, 176, 104);
+						var withBrush = !mxClient.IS_IE && !mxClient.IS_IE11;
+						this.freehandWindow = new FreehandWindow(editorUi, document.body.offsetWidth - 420, 102, 176, withBrush? 120 : 84, withBrush);
 					}
 					
 					if (graph.freehand.isDrawing())
@@ -254,20 +377,30 @@
 					!selection.checked, noPages || !pages.checked);
 			}), null, mxResources.get('export'));
 			
-			editorUi.showDialog(dlg.container, 300, 180, true, true);
+			editorUi.showDialog(dlg.container, 300, 200, true, true);
 		}));
 		
-		editorUi.actions.put('exportUrl', new Action(mxResources.get('url') + '...', function()
+		if (Editor.enableExportUrl)
 		{
-			editorUi.showPublishLinkDialog(mxResources.get('url'), true, null, null,
-				function(linkTarget, linkColor, allPages, lightbox, editLink, layers)
+			editorUi.actions.put('exportUrl', new Action(mxResources.get('url') + '...', function()
 			{
-				var dlg = new EmbedDialog(editorUi, editorUi.createLink(linkTarget,
-					linkColor, allPages, lightbox, editLink, layers, null, true));
-				editorUi.showDialog(dlg.container, 440, 240, true, true);
-				dlg.init();
-			});
-		}));
+				editorUi.showPublishLinkDialog(mxResources.get('url'), true, null, null,
+					function(linkTarget, linkColor, allPages, lightbox, editLink, layers, width, height, tags)
+				{
+					var params = [];
+
+					if (tags)
+					{
+						params.push('tags=%7B%7D');
+					}
+
+					var dlg = new EmbedDialog(editorUi, editorUi.createLink(linkTarget, linkColor,
+						allPages, lightbox, editLink, layers, null, true, params));
+					editorUi.showDialog(dlg.container, 450, 240, true, true);
+					dlg.init();
+				});
+			}));
+		}
 		
 		editorUi.actions.put('exportHtml', new Action(mxResources.get('formatHtmlEmbedded') + '...', function()
 		{
@@ -278,16 +411,17 @@
 					editorUi.spinner.stop();
 					
 					editorUi.showHtmlDialog(mxResources.get('export'), null, url, function(publicUrl, zoomEnabled,
-						initialZoom, linkTarget, linkColor, fit, allPages, layers, lightbox, editLink)
+						initialZoom, linkTarget, linkColor, fit, allPages, layers, tags, lightbox, editLink)
 					{
-						editorUi.createHtml(publicUrl, zoomEnabled, initialZoom, linkTarget, linkColor,
-							fit, allPages, layers, lightbox, editLink, mxUtils.bind(this, function(html, scriptTag)
+						editorUi.createHtml(publicUrl, zoomEnabled, initialZoom, linkTarget, linkColor, fit, allPages,
+							layers, tags, lightbox, editLink, mxUtils.bind(this, function(html, scriptTag)
 							{
 								var basename = editorUi.getBaseFilename(allPages);
 								var result = '<!--[if IE]><meta http-equiv="X-UA-Compatible" content="IE=5,IE=9" ><![endif]-->\n' +
 									'<!DOCTYPE html>\n<html>\n<head>\n<title>' + mxUtils.htmlEntities(basename) + '</title>\n' +
 									'<meta charset="utf-8"/>\n</head>\n<body>' + html + '\n' + scriptTag + '\n</body>\n</html>';
-								editorUi.saveData(basename + '.html', 'html', result, 'text/html');
+								editorUi.saveData(basename + ((basename.substring(basename.lenth - 7) ==
+									'.drawio') ? '' : '.drawio') + '.html', 'html', result, 'text/html');
 							}));
 					});
 				});
@@ -302,7 +436,7 @@
 				editorUi.showDialog(new PrintDialog(editorUi, mxResources.get('formatPdf')).container, 360,
 						(editorUi.pages != null && editorUi.pages.length > 1 && (editorUi.editor.editable ||
 						urlParams['hide-pages'] != '1')) ?
-						450 : 370, true, true);
+						470 : 390, true, true);
 			}
 			else
 			{
@@ -329,20 +463,80 @@
 					}
 				};
 				
-				var dlgH = 180;
+				var dlgH = 200;
+				var pageCount = 1;
+				var currentPage = null;
 				
 				if (editorUi.pdfPageExport && !noPages)
 				{
 					var allPages = editorUi.addRadiobox(div, 'pages', mxResources.get('allPages'), true);
-					var currentPage = editorUi.addRadiobox(div, 'pages', mxResources.get('currentPage'), false);
+					var pagesRadio = editorUi.addRadiobox(div, 'pages', mxResources.get('pages') + ':', false, null, true);
+
+					var pagesFromInput = document.createElement('input');
+					pagesFromInput.style.cssText = 'margin:0 8px 0 8px;'
+					pagesFromInput.setAttribute('value', '1');
+					pagesFromInput.setAttribute('type', 'number');
+					pagesFromInput.setAttribute('min', '1');
+					pagesFromInput.style.width = '50px';
+					div.appendChild(pagesFromInput);
+					
+					var span = document.createElement('span');
+					mxUtils.write(span, mxResources.get('to'));
+					div.appendChild(span);
+					
+					var pagesToInput = pagesFromInput.cloneNode(true);
+					div.appendChild(pagesToInput);
+
+					mxEvent.addListener(pagesFromInput, 'focus', function()
+					{
+						pagesRadio.checked = true;
+					});
+					
+					mxEvent.addListener(pagesToInput, 'focus', function()
+					{
+						pagesRadio.checked = true;
+					});					
+
+					function validatePageRange()
+					{
+						pagesToInput.value = Math.max(1, Math.min(pageCount, Math.max(parseInt(pagesToInput.value), parseInt(pagesFromInput.value))));
+						pagesFromInput.value = Math.max(1, Math.min(pageCount, Math.min(parseInt(pagesToInput.value), parseInt(pagesFromInput.value))));
+					};
+					
+					mxEvent.addListener(pagesFromInput, 'change', validatePageRange);
+					mxEvent.addListener(pagesToInput, 'change', validatePageRange);
+					
+					if (editorUi.pages != null)
+					{
+						pageCount = editorUi.pages.length;
+			
+						if (editorUi.currentPage != null)
+						{
+							for (var i = 0; i < editorUi.pages.length; i++)
+							{
+								if (editorUi.currentPage == editorUi.pages[i])
+								{
+									currentPage = i + 1;
+									pagesFromInput.value = currentPage;
+									pagesToInput.value = currentPage;
+									break;
+								}
+							}
+						}
+					}
+					
+					pagesFromInput.setAttribute('max', pageCount);
+					pagesToInput.setAttribute('max', pageCount);
+					mxUtils.br(div);
+
 					var selection = editorUi.addRadiobox(div, 'pages', mxResources.get('selectionOnly'), false, graph.isSelectionEmpty());
 					var crop = editorUi.addCheckbox(div, mxResources.get('crop'), false, true);
 					var grid = editorUi.addCheckbox(div, mxResources.get('grid'), false, false);
 					
 					mxEvent.addListener(allPages, 'change', cropEnableFn);
-					mxEvent.addListener(currentPage, 'change', cropEnableFn);
+					mxEvent.addListener(pagesRadio, 'change', cropEnableFn);
 					mxEvent.addListener(selection, 'change', cropEnableFn);
-					dlgH += 60;
+					dlgH += 64;
 				}
 				else
 				{
@@ -364,11 +558,11 @@
 					editorUi.getServiceName() == 'draw.io';
 
 				var transparentBkg = null, include = null;
-					
+				
 				if (EditorUi.isElectronApp || isDrawioWeb)
 				{
-					include = editorUi.addCheckbox(div,
-							mxResources.get('includeCopyOfMyDiagram'), true);
+					include = editorUi.addCheckbox(div, mxResources.get('includeCopyOfMyDiagram'),
+						Editor.defaultIncludeDiagram);
 					dlgH += 30;
 				}
 				
@@ -379,12 +573,25 @@
 					
 					dlgH += 30;
 				}
-				
+
 				var dlg = new CustomDialog(editorUi, div, mxUtils.bind(this, function()
 				{
+					var pageRange = null;
+
+					if (!noPages)
+					{
+						var from = parseInt(pagesFromInput.value);
+						var to = parseInt(pagesToInput.value);
+						pageRange = (!allPages.checked &&
+							(from != currentPage || to != currentPage)) ?
+							{from: Math.max(0, Math.min(pageCount - 1, from - 1)),
+							to: Math.max(0, Math.min(pageCount - 1, to - 1))} : null;
+					}
+					
 					editorUi.downloadFile('pdf', null, null, !selection.checked,
-						noPages? true : !allPages.checked, !crop.checked, transparentBkg != null && transparentBkg.checked, null,
-						null, grid.checked, include != null && include.checked);
+						noPages? true : !allPages.checked && pageRange == null,
+						!crop.checked, transparentBkg != null && transparentBkg.checked, null,
+						null, grid.checked, include != null && include.checked, pageRange);
 				}), null, mxResources.get('export'));
 				editorUi.showDialog(dlg.container, 300, dlgH, true, true);
 			}
@@ -580,7 +787,7 @@
 				};
 	
 				var dlg = new BackgroundImageDialog(editorUi, apply);
-				editorUi.showDialog(dlg.container, 320, 170, true, true);
+				editorUi.showDialog(dlg.container, 400, 170, true, true);
 				dlg.init();
 			}
 		}));
@@ -589,16 +796,25 @@
 		{
 			editorUi.showExportDialog(mxResources.get('formatSvg'), true, mxResources.get('export'),
 				'https://www.diagrams.net/doc/faq/export-diagram',
-				mxUtils.bind(this, function(scale, transparentBackground, ignoreSelection, addShadow, editable,
-					embedImages, border, cropImage, currentPage, linkTarget, grid, keepTheme, exportType)
+				mxUtils.bind(this, function(scale, transparentBackground, ignoreSelection,
+					addShadow, editable, embedImages, border, cropImage, currentPage,
+					linkTarget, grid, keepTheme, exportType, embedFonts, lblToSvg)
 				{
 					var val = parseInt(scale);
 					
 					if (!isNaN(val) && val > 0)
 					{
-						editorUi.exportSvg(val / 100, transparentBackground, ignoreSelection,
-							addShadow, editable, embedImages, border, !cropImage, false,
-							linkTarget, keepTheme, exportType);
+						if (lblToSvg)
+						{
+							editorUi.downloadFile('remoteSvg', null, null, ignoreSelection, null, cropImage,
+										 transparentBackground, scale, border, null, editable);
+						}
+						else
+						{
+							editorUi.exportSvg(val / 100, transparentBackground, ignoreSelection,
+								addShadow, editable, embedImages, border, !cropImage, false,
+								linkTarget, keepTheme, exportType, embedFonts);
+						}
 					}
 				}), true, null, 'svg', true);
 		}));
@@ -620,7 +836,7 @@
 								addShadow, editable, border, !cropImage, false, null, grid, null,
 								keepTheme, exportType);
 						}
-					}), true, true, 'png', true);
+					}), true, Editor.defaultIncludeDiagram, 'png', true);
 			}
 			else if (!editorUi.isOffline() && (!mxClient.IS_IOS || !navigator.standalone))
 			{
@@ -747,15 +963,15 @@
 			editorUi.openLink('https://get.diagrams.net/');
 		});
 		
-		action = editorUi.actions.addAction('tags...', mxUtils.bind(this, function()
+		action = editorUi.actions.addAction('tags', mxUtils.bind(this, function()
 		{
 			if (this.tagsWindow == null)
 			{
-				this.tagsWindow = new TagsWindow(editorUi, document.body.offsetWidth - 380, 230, 300, 120);
-				this.tagsWindow.window.addListener('show', function()
+				this.tagsWindow = new TagsWindow(editorUi, document.body.offsetWidth - 400, 60, 212, 200);
+				this.tagsWindow.window.addListener('show', mxUtils.bind(this, function()
 				{
 					editorUi.fireEvent(new mxEventObject('tags'));
-				});
+				}));
 				this.tagsWindow.window.addListener('hide', function()
 				{
 					editorUi.fireEvent(new mxEventObject('tags'));
@@ -833,7 +1049,7 @@
 					editorUi.exportVisio(!pages.checked);
 				}), null, mxResources.get('export'));
 				
-				editorUi.showDialog(dlg.container, 300, 110, true, true);
+				editorUi.showDialog(dlg.container, 300, 130, true, true);
 			}
 		}));
 		
@@ -841,6 +1057,34 @@
 		{
 			editorUi.actions.addAction('configuration...', function()
 			{
+				// Moves show start screen option to configuration dialog in sketch
+				var splashCb = document.createElement('input');
+				splashCb.setAttribute('type', 'checkbox');
+				splashCb.style.marginRight = '4px';
+				splashCb.checked = mxSettings.getShowStartScreen();
+				splashCb.defaultChecked = splashCb.checked;
+
+				if (editorUi.isSettingsEnabled() && urlParams['sketch'] == '1')
+				{
+					var showSplash = document.createElement('span');
+					showSplash.style['float'] = 'right';
+					showSplash.style.cursor = 'pointer';
+					showSplash.style.userSelect = 'none';
+					showSplash.style.marginTop = '-4px';
+					showSplash.appendChild(splashCb);
+					mxUtils.write(showSplash, mxResources.get('showStartScreen'));
+
+					mxEvent.addListener(showSplash, 'click', function(evt)
+					{
+						if (mxEvent.getSource(evt) != splashCb)
+						{	
+							splashCb.checked = !splashCb.checked;
+						}
+					});
+
+					header = showSplash;
+				}
+
 				// Add help, link button
 				var value = localStorage.getItem(Editor.configurationKey);
 				
@@ -850,27 +1094,36 @@
 					{
 						try
 						{
-							localStorage.removeItem(Editor.configurationKey);
-							
 							if (mxEvent.isShiftDown(evt))
 							{
+								localStorage.removeItem(Editor.settingsKey);
 								localStorage.removeItem('.drawio-config');
-								localStorage.removeItem('.mode');
 							}
-							
-							editorUi.hideDialog();
-							editorUi.alert(mxResources.get('restartForChangeRequired'));
+							else
+							{
+								localStorage.removeItem(Editor.configurationKey);
+								editorUi.hideDialog();
+								editorUi.alert(mxResources.get('restartForChangeRequired'));
+							}
 						}
 						catch (e)
 						{
 							editorUi.handleError(e);
 						}
 					});
-				}]];
+				}, 'Shift+Click to Reset Settings']];
+
+				var pluginsAction = editorUi.actions.get('plugins');
+
+				if (pluginsAction != null && urlParams['sketch'] == '1')
+				{
+					// TODO: Show change message only when plugins have changed
+					buttons.push([mxResources.get('plugins'), pluginsAction.funct]);
+				}
 				
 				if (!EditorUi.isElectronApp)
 				{
-					buttons.push([mxResources.get('link'), function(evt, input)
+					buttons.push([mxResources.get('share'), function(evt, input)
 					{
 						if (input.value.length > 0)
 						{
@@ -881,7 +1134,7 @@
 									'/' + editorUi.getSearch() + '#_CONFIG_' +
 									Graph.compress(JSON.stringify(obj));
 								var dlg = new EmbedDialog(editorUi, url);
-								editorUi.showDialog(dlg.container, 440, 240, true);
+								editorUi.showDialog(dlg.container, 450, 240, true);
 								dlg.init();
 							}
 							catch (e)
@@ -903,19 +1156,32 @@
 					{
 						try
 						{
-							if (newValue.length > 0)
+							if (splashCb.parentNode != null)
 							{
-								var obj = JSON.parse(newValue);
-								
-								localStorage.setItem(Editor.configurationKey, JSON.stringify(obj));
+								mxSettings.setShowStartScreen(splashCb.checked);
+								mxSettings.save();
+							}
+							
+							if (newValue == value)
+							{
+								editorUi.hideDialog();
 							}
 							else
 							{
-								localStorage.removeItem(Editor.configurationKey);
-							}
+								if (newValue.length > 0)
+								{
+									var obj = JSON.parse(newValue);
+									
+									localStorage.setItem(Editor.configurationKey, JSON.stringify(obj));
+								}
+								else
+								{
+									localStorage.removeItem(Editor.configurationKey);
+								}
 
-							editorUi.hideDialog();
-							editorUi.alert(mxResources.get('restartForChangeRequired'));
+								editorUi.hideDialog();
+								editorUi.alert(mxResources.get('restartForChangeRequired'));
+							}
 						}
 						catch (e)
 						{
@@ -924,10 +1190,8 @@
 					}
 				}, null, null, null, null, null, true, null, null,
 					'https://www.diagrams.net/doc/faq/configure-diagram-editor',
-					buttons);
+					buttons, splashCb.parentNode);
 		    	
-		    	dlg.textarea.style.width = '600px';
-		    	dlg.textarea.style.height = '380px';
 				editorUi.showDialog(dlg.container, 620, 460, true, false);
 				dlg.init();
 			});
@@ -1016,7 +1280,7 @@
 						{
 							elt.style.top = '0px';
 						}
-
+						
 						var icon = document.createElement('div');
 						icon.style.backgroundImage = 'url(' + Editor.globeImage + ')';
 						icon.style.backgroundPosition = 'center center';
@@ -1030,6 +1294,15 @@
 						elt.appendChild(icon);
 						mxUtils.setOpacity(elt, 40);
 						
+						if (urlParams['winCtrls'] == '1')
+						{
+							elt.style.right = '95px';
+							elt.style.width = '19px';
+							elt.style.height = '19px';
+							elt.style.webkitAppRegion = 'no-drag';
+							icon.style.webkitAppRegion = 'no-drag';
+						}
+
 						if (uiTheme == 'atlas' || uiTheme == 'dark')
 						{
 							elt.style.opacity = '0.85';
@@ -1037,6 +1310,7 @@
 						}
 
 						document.body.appendChild(elt);
+						menubar.langIcon = elt;
 					}
 				}
 
@@ -1080,8 +1354,6 @@
 			}, null, null, null, null, null, true, null, null,
 				'https://www.diagrams.net/doc/faq/apply-layouts');
 	    	
-	    	dlg.textarea.style.width = '600px';
-	    	dlg.textarea.style.height = '380px';
 			editorUi.showDialog(dlg.container, 620, 460, true, true);
 			dlg.init();
 		});
@@ -1248,7 +1520,7 @@
 					doLayout();
 				});
 				
-				editorUi.showDialog(dlg.container, 355, 125, true, true);
+				editorUi.showDialog(dlg.container, 355, 140, true, true);
 			}, parent, null, isGraphEnabled());
 						
 			menu.addSeparator(parent);
@@ -1295,8 +1567,9 @@
 					
 					if (e.keyCode == 13 && term.length > 0)
 					{
-						this.editorUi.openLink('https://www.google.com/search?q=site%3Adiagrams.net+inurl%3A%2Fdoc%2Ffaq%2F+' +
-							encodeURIComponent(term));
+						this.editorUi.openLink('https://www.diagrams.net/search?src=' +
+							(EditorUi.isElectronApp ? 'DESKTOP' : encodeURIComponent(location.host)) + 
+							'&search=' + encodeURIComponent(term));
 						input.value = '';
 						EditorUi.logEvent({category: 'SEARCH-HELP', action: 'search', label: term});
 						
@@ -1336,9 +1609,25 @@
 
 				if (EditorUi.isElectronApp)
 				{
-					console.log('electron help menu');
+					editorUi.actions.addAction('website...', function()
+					{
+						editorUi.openLink('https://www.diagrams.net');
+					});
+					
+					editorUi.actions.addAction('check4Updates', function()
+					{
+						editorUi.checkForUpdates();
+					});
+					
 					this.addMenuItems(menu, ['-', 'keyboardShortcuts', 'quickStart',
-						'support', '-', 'forkme', '-', 'about'], parent);
+						'website', 'support', '-'], parent);
+						
+					if (urlParams['disableUpdate'] != '1')
+					{
+						this.addMenuItems(menu, ['check4Updates', '-'], parent);
+					}
+						
+					this.addMenuItems(menu, ['forkme', '-', 'about'], parent);
 
 				}
 				else
@@ -1376,11 +1665,11 @@
 			mxResources.parse('createSidebarEntry=Create Sidebar Entry');
 			mxResources.parse('testCheckFile=Check File');
 			mxResources.parse('testDiff=Diff/Sync');
+			mxResources.parse('testInspectPages=Check Pages');
+			mxResources.parse('testFixPages=Fix Pages');
 			mxResources.parse('testInspect=Inspect');
 			mxResources.parse('testShowConsole=Show Console');
 			mxResources.parse('testXmlImageExport=XML Image Export');
-			mxResources.parse('testDownloadRtModel=Export RT model');
-			mxResources.parse('testImportRtModel=Import RT model');
 
 			editorUi.actions.addAction('createSidebarEntry', mxUtils.bind(this, function()
 			{
@@ -1493,10 +1782,13 @@
 										}
 									}
 								}
+
+								var keys = Object.keys(dups);
 								
-								if (Object.keys(dups).length > 0)
+								if (keys.length > 0)
 								{
-									var log = pageId + ': ' + Object.keys(dups).length + ' Duplicates: ' + Object.keys(dups).join(', ');
+									var log = pageId + ': ' + keys.length +
+										' Duplicates: ' + keys.join(', ');
 									mxLog.debug(log + ' (see console)');
 								}
 								else
@@ -1567,8 +1859,6 @@
 					}
 				});
 		    	
-		    	dlg.textarea.style.width = '600px';
-		    	dlg.textarea.style.height = '380px';
 				editorUi.showDialog(dlg.container, 620, 460, true, true);
 				dlg.init();
 			}));
@@ -1583,7 +1873,8 @@
 					{
 						snapshot = editorUi.getPagesForNode(mxUtils.parseXml(
 							editorUi.getFileData(true)).documentElement);
-						dlg.textarea.value = 'Snapshot updated ' + new Date().toLocaleString();
+						dlg.textarea.value = 'Snapshot updated ' + new Date().toLocaleString() +
+							' Checksum ' + editorUi.getHashValueForPages(snapshot);
 					}], ['Diff', function(evt, input)
 					{
 						try
@@ -1617,15 +1908,12 @@
 						}
 					}, null, 'Close', null, null, null, true, null, 'Patch', null, buttons);
 			    	
-			    	dlg.textarea.style.width = '600px';
-			    	dlg.textarea.style.height = '380px';
-
-
 					if (snapshot == null)
 					{
 						snapshot = editorUi.getPagesForNode(mxUtils.parseXml(
 							editorUi.getFileData(true)).documentElement);
-						dlg.textarea.value = 'Snapshot created ' + new Date().toLocaleString();
+						dlg.textarea.value = 'Snapshot created ' + new Date().toLocaleString() +
+							' Checksum ' + editorUi.getHashValueForPages(snapshot);
 					}
 					else
 					{
@@ -1641,6 +1929,97 @@
 					editorUi.alert('No pages');
 				}
 			}));
+
+			editorUi.actions.addAction('testInspectPages', mxUtils.bind(this, function()
+			{
+				var file = editorUi.getCurrentFile();
+
+				console.log('editorUi', editorUi);
+
+				if (file != null && file.isRealtime())
+				{
+					console.log('Checksum ownPages: ' +
+						editorUi.getHashValueForPages(
+							file.ownPages));
+					console.log('Checksum theirPages: ' +
+						editorUi.getHashValueForPages(
+							file.theirPages));
+					console.log('diff ownPages/theirPages',
+						editorUi.diffPages(file.ownPages,
+							file.theirPages));
+
+					if (file.shadowPages != null)
+					{
+						console.log('Checksum shadowPages: ' +
+							editorUi.getHashValueForPages(
+								file.shadowPages));
+						console.log('diff shadowPages/ownPages',
+							editorUi.diffPages(file.shadowPages,
+								file.ownPages));
+						console.log('diff ownPages/shadowPages',
+							editorUi.diffPages(file.ownPages,
+								file.shadowPages));
+						console.log('diff theirPages/shadowPages',
+							editorUi.diffPages(file.theirPages,
+								file.shadowPages));
+					}
+
+					if (file.sync != null && file.sync.snapshot != null)
+					{
+						console.log('Checksum snapshot: ' +
+							editorUi.getHashValueForPages(file.sync.snapshot));
+						console.log('diff ownPages/snapshot',
+							editorUi.diffPages(file.ownPages,
+								file.sync.snapshot));
+						console.log('diff theirPages/snapshot',
+							editorUi.diffPages(file.theirPages,
+								file.sync.snapshot));
+
+						if (editorUi.pages != null)
+						{
+							console.log('diff snapshot/actualPages',
+								editorUi.diffPages(file.sync.snapshot,
+									editorUi.pages));
+						}
+					}
+
+					if (editorUi.pages != null)
+					{
+						console.log('Checksum actualPages: ' +
+							editorUi.getHashValueForPages(
+								editorUi.pages));
+						console.log('diff ownPages/actualPages',
+							editorUi.diffPages(file.ownPages,
+								editorUi.pages));
+						console.log('diff theirPages/actualPages',
+							editorUi.diffPages(file.theirPages,
+								editorUi.pages));
+					}
+				}
+			}));
+			
+			editorUi.actions.addAction('testFixPages', mxUtils.bind(this, function()
+			{
+				var file = editorUi.getCurrentFile();
+
+				console.log('editorUi', editorUi);
+
+				if (file != null && file.isRealtime() &&
+					file.shadowPages != null)
+				{
+					console.log('patching actualPages to shadowPages',
+						file.patch([editorUi.diffPages(
+							file.shadowPages, editorUi.pages)]));
+					file.ownPages = editorUi.clonePages(editorUi.pages);
+					file.theirPages = editorUi.clonePages(editorUi.pages);
+					file.shadowPages = editorUi.clonePages(editorUi.pages);
+
+					if (file.sync != null)
+					{
+						file.sync.snapshot = editorUi.clonePages(editorUi.pages);
+					}
+				}
+			}));
 	
 			editorUi.actions.addAction('testInspect', mxUtils.bind(this, function()
 			{
@@ -1649,7 +2028,6 @@
 			
 			editorUi.actions.addAction('testXmlImageExport', mxUtils.bind(this, function()
 			{
-				var bg = '#ffffff';
 				var scale = 1;
 				var b = 1;
 				
@@ -1664,7 +2042,8 @@
 				
 			    // Renders graph. Offset will be multiplied with state's scale when painting state.
 				var xmlCanvas = new mxXmlCanvas2D(root);
-				xmlCanvas.translate(Math.floor((b / scale - bounds.x) / vs), Math.floor((b / scale - bounds.y) / vs));
+				xmlCanvas.translate(Math.floor((b / scale - bounds.x) / vs),
+					Math.floor((b / scale - bounds.y) / vs));
 				xmlCanvas.scale(scale / vs);
 				
 				var stateCounter = 0;
@@ -1713,14 +2092,16 @@
 					mxLog.window.fit();
 				}
 				
-				mxLog.window.div.style.zIndex = mxPopupMenu.prototype.zIndex - 1;
+				mxLog.window.div.style.zIndex = mxPopupMenu.prototype.zIndex - 2;
 			});
 			
 			this.put('testDevelop', new Menu(mxUtils.bind(this, function(menu, parent)
 			{
 				this.addMenuItems(menu, ['createSidebarEntry', 'showBoundingBox', '-',
-					'testCheckFile', 'testDiff', '-', 'testInspect', '-',
-					'testXmlImageExport', '-', 'testShowConsole'], parent);
+					'testInspectPages', 'testFixPages', '-',
+					'testCheckFile', 'testDiff', '-',
+					'testInspect', '-', 'testXmlImageExport', '-',
+					'testShowConsole'], parent);
 			})));
 		}
 
@@ -1760,10 +2141,10 @@
 					editorUi.spinner.stop();
 					
 					editorUi.showHtmlDialog(mxResources.get('create'), 'https://www.diagrams.net/doc/faq/embed-html-options',
-						url, function(publicUrl, zoomEnabled, initialZoom, linkTarget, linkColor, fit, allPages, layers, lightbox, editLink)
+						url, function(publicUrl, zoomEnabled, initialZoom, linkTarget, linkColor, fit, allPages, layers, tags, lightbox, editLink)
 					{
-						editorUi.createHtml(publicUrl, zoomEnabled, initialZoom, linkTarget, linkColor,
-							fit, allPages, layers, lightbox, editLink, mxUtils.bind(this, function(html, scriptTag)
+						editorUi.createHtml(publicUrl, zoomEnabled, initialZoom, linkTarget, linkColor, fit, allPages,
+							layers, tags, lightbox, editLink, mxUtils.bind(this, function(html, scriptTag)
 							{
 								var dlg = new EmbedDialog(editorUi, html + '\n' + scriptTag, null, null, function()
 								{
@@ -1826,7 +2207,7 @@
 										editorUi.handleError({message: mxResources.get('errorUpdatingPreview')});
 									}
 								});
-								editorUi.showDialog(dlg.container, 440, 240, true, true);
+								editorUi.showDialog(dlg.container, 450, 240, true, true);
 								dlg.init();
 							}));
 					});
@@ -1848,7 +2229,7 @@
 					{
 						var dlg = new EmbedDialog(editorUi, '<img src="' + ((current.constructor != DriveFile) ?
 							url : 'https://drive.google.com/uc?id=' + current.getId()) + '"/>');
-						editorUi.showDialog(dlg.container, 440, 240, true, true);
+						editorUi.showDialog(dlg.container, 450, 240, true, true);
 						dlg.init();
 					}
 					else
@@ -1869,7 +2250,7 @@
 					{
 						editorUi.spinner.stop();
 						var dlg = new EmbedDialog(editorUi, result);
-						editorUi.showDialog(dlg.container, 440, 240, true, true);
+						editorUi.showDialog(dlg.container, 450, 240, true, true);
 						dlg.init();
 					}, function(err)
 					{
@@ -1891,7 +2272,7 @@
 						editorUi.spinner.stop();
 						
 						var dlg = new EmbedDialog(editorUi, result);
-						editorUi.showDialog(dlg.container, 440, 240, true, true);
+						editorUi.showDialog(dlg.container, 450, 240, true, true);
 						dlg.init();
 					}, function(err)
 					{
@@ -1909,18 +2290,24 @@
 			
 			editorUi.showPublishLinkDialog(mxResources.get('iframe'), null, '100%',
 				Math.ceil(bounds.height / graph.view.scale) + 2,
-				function(linkTarget, linkColor, allPages, lightbox, editLink, layers, width, height)
+				function(linkTarget, linkColor, allPages, lightbox, editLink, layers, width, height, tags)
 			{
 				if (editorUi.spinner.spin(document.body, mxResources.get('loading')))
 				{
 					editorUi.getPublicUrl(editorUi.getCurrentFile(), function(url)
 					{
 						editorUi.spinner.stop();
+						var params = [];
+
+						if (tags)
+						{
+							params.push('tags=%7B%7D');
+						}
 						
 						var dlg = new EmbedDialog(editorUi, '<iframe frameborder="0" style="width:' + width +
 							';height:' + height + ';" src="' + editorUi.createLink(linkTarget, linkColor,
-							allPages, lightbox, editLink, layers, url) + '"></iframe>');
-						editorUi.showDialog(dlg.container, 440, 240, true, true);
+							allPages, lightbox, editLink, layers, url, null, params) + '"></iframe>');
+						editorUi.showDialog(dlg.container, 450, 240, true, true);
 						dlg.init();
 					});
 				}
@@ -1929,8 +2316,53 @@
 
 		editorUi.actions.put('embedNotion', new Action(mxResources.get('notion') + '...', function()
 		{
+			var footer = document.createElement('div');
+			footer.style.position = 'absolute';
+			footer.style.bottom = '30px';
+			footer.style.textAlign = 'center';
+			footer.style.width = '100%';
+			footer.style.left = '0px';
+			var link = document.createElement('a');
+			link.setAttribute('href', 'javascript:void(0);');
+			link.setAttribute('target', '_blank');
+			link.style.cursor = 'pointer';
+			mxUtils.write(link, mxResources.get('getNotionChromeExtension'));
+			footer.appendChild(link);
+
+			mxEvent.addListener(link, 'click', function(evt)
+			{
+				editorUi.openLink('https://chrome.google.com/webstore/detail/drawio-for-notion/plhaalebpkihaccllnkdaokdoeaokmle');
+				mxEvent.consume(evt);
+			});
+			
 			editorUi.showPublishLinkDialog(mxResources.get('notion'), null, null, null,
-				function(linkTarget, linkColor, allPages, lightbox, editLink, layers, width, height)
+				function(linkTarget, linkColor, allPages, lightbox, editLink, layers, width, height, tags)
+			{
+				if (editorUi.spinner.spin(document.body, mxResources.get('loading')))
+				{
+					editorUi.getPublicUrl(editorUi.getCurrentFile(), function(url)
+					{
+						editorUi.spinner.stop();
+						var params = ['border=0'];
+
+						if (tags)
+						{
+							params.push('tags=%7B%7D');
+						}
+
+						var dlg = new EmbedDialog(editorUi, editorUi.createLink(linkTarget, linkColor,
+							allPages, lightbox, editLink, layers, url, null, params, true));
+						editorUi.showDialog(dlg.container, 450, 240, true, true);
+						dlg.init();
+					});
+				}
+			}, true, 'https://www.diagrams.net/blog/drawio-notion', footer);
+		}));
+		
+		editorUi.actions.put('publishLink', new Action(mxResources.get('link') + '...', function()
+		{
+			editorUi.showPublishLinkDialog(null, null, null, null,
+				function(linkTarget, linkColor, allPages, lightbox, editLink, layers, width, height, tags)
 			{
 				if (editorUi.spinner.spin(document.body, mxResources.get('loading')))
 				{
@@ -1938,28 +2370,16 @@
 					{
 						editorUi.spinner.stop();
 						
+						var params = [];
+
+						if (tags)
+						{
+							params.push('tags=%7B%7D');
+						}
+
 						var dlg = new EmbedDialog(editorUi, editorUi.createLink(linkTarget, linkColor,
-							allPages, lightbox, editLink, layers, url, null, ['border=0'], true));
-						editorUi.showDialog(dlg.container, 440, 240, true, true);
-						dlg.init();
-					});
-				}
-			}, true);
-		}));
-		
-		editorUi.actions.put('publishLink', new Action(mxResources.get('link') + '...', function()
-		{
-			editorUi.showPublishLinkDialog(null, null, null, null,
-				function(linkTarget, linkColor, allPages, lightbox, editLink, layers)
-			{
-				if (editorUi.spinner.spin(document.body, mxResources.get('loading')))
-				{
-					editorUi.getPublicUrl(editorUi.getCurrentFile(), function(url)
-					{
-						editorUi.spinner.stop();
-						var dlg = new EmbedDialog(editorUi, editorUi.createLink(linkTarget,
-							linkColor, allPages, lightbox, editLink, layers, url));
-						editorUi.showDialog(dlg.container, 440, 240, true, true);
+							allPages, lightbox, editLink, layers, url, null, params));
+						editorUi.showDialog(dlg.container, 450, 240, true, true);
 						dlg.init();
 					});
 				}
@@ -2009,12 +2429,18 @@
 			});
 			
 			action.setToggleAction(true);
-			action.setSelectedCallback(function() { return editorUi.scratchpad != null; });
-
-			editorUi.actions.addAction('plugins...', function()
+			action.setSelectedCallback(function()
 			{
-				editorUi.showDialog(new PluginsDialog(editorUi).container, 360, 170, true, false);
+				return editorUi.scratchpad != null;
 			});
+			
+			if (urlParams['plugins'] != '0')
+			{
+				editorUi.actions.addAction('plugins...', function()
+				{
+					editorUi.showDialog(new PluginsDialog(editorUi).container, 380, 240, true, false);
+				});
+			}
 		}
 		
 		var action = editorUi.actions.addAction('search', function()
@@ -2029,6 +2455,7 @@
 			}
 		});
 		
+		action.label = mxResources.get('searchShapes');
 		action.setToggleAction(true);
 		action.setSelectedCallback(function() { return editorUi.sidebar.isEntryVisible('search'); });
 		
@@ -2084,23 +2511,30 @@
 			
 			editorUi.actions.addAction('exit', function()
 			{
-				var fn = function()
+				if (urlParams['embedInline'] == '1')
 				{
-					editorUi.editor.modified = false;
-					var msg = (urlParams['proto'] == 'json') ? JSON.stringify({event: 'exit',
-						modified: editorUi.editor.modified}) : '';
-					var parent = window.opener || window.parent;
-					parent.postMessage(msg, '*');
-				}
-				
-				if (!editorUi.editor.modified)
-				{
-					fn();
+					editorUi.sendEmbeddedSvgExport();
 				}
 				else
 				{
-					editorUi.confirm(mxResources.get('allChangesLost'), null, fn,
-						mxResources.get('cancel'), mxResources.get('discardChanges'));
+					var fn = function()
+					{
+						editorUi.editor.modified = false;
+						var msg = (urlParams['proto'] == 'json') ? JSON.stringify({event: 'exit',
+							modified: editorUi.editor.modified}) : '';
+						var parent = window.opener || window.parent;
+						parent.postMessage(msg, '*');
+					}
+					
+					if (!editorUi.editor.modified)
+					{
+						fn();
+					}
+					else
+					{
+						editorUi.confirm(mxResources.get('allChangesLost'), null, fn,
+							mxResources.get('cancel'), mxResources.get('discardChanges'));
+					}
 				}
 			});
 		}
@@ -2356,11 +2790,14 @@
 				}, parent);
 			}
 
-			menu.addItem(mxResources.get('device') + '...', null, function()
+			if (urlParams['noDevice'] != '1')
 			{
-				editorUi.importLocalFile(true);
-			}, parent);
-
+				menu.addItem(mxResources.get('device') + '...', null, function()
+				{
+					editorUi.importLocalFile(true);
+				}, parent);
+			}
+			
 			if (!editorUi.isOffline())
 			{
 				menu.addSeparator(parent);
@@ -2443,15 +2880,18 @@
 				menu.addCheckmark(item, Editor.checkmarkImage);
 			}
 			
-			item = menu.addItem(mxResources.get('dark'), null, function()
+			if (theme == 'dark' || (!mxClient.IS_IE && !mxClient.IS_IE11))
 			{
-				mxSettings.setUi('dark');
-				editorUi.alert(mxResources.get('restartForChangeRequired'));
-			}, parent);
-			
-			if (theme == 'dark')
-			{
-				menu.addCheckmark(item, Editor.checkmarkImage);
+				item = menu.addItem(mxResources.get('dark'), null, function()
+				{
+					mxSettings.setUi('dark');
+					editorUi.alert(mxResources.get('restartForChangeRequired'));
+				}, parent);
+				
+				if (theme == 'dark')
+				{
+					menu.addCheckmark(item, Editor.checkmarkImage);
+				}
 			}
 			
 			menu.addSeparator(parent);
@@ -2516,7 +2956,7 @@
 						
 						return false;
 					}, null, null, null, null, editorUi.editor.fileExtensions);
-					this.editorUi.showDialog(dlg.container, 340, 90, true, true);
+					this.editorUi.showDialog(dlg.container, 340, 96, true, true);
 					dlg.init();
 				}
 			}
@@ -2695,7 +3135,7 @@
 			}
 		})));
 
-		var addInsertItem = function(menu, parent, title, method)
+		editorUi.addInsertItem = function(menu, parent, title, method)
 		{
 			if (method != 'plantUml' || (EditorUi.enablePlantUml && !editorUi.isOffline()))
 			{
@@ -2794,7 +3234,7 @@
 			}
 		})).isEnabled = isGraphEnabled;
 		
-		var addInsertMenuItems = mxUtils.bind(this, function(menu, parent, methods)
+		editorUi.addInsertMenuItems = mxUtils.bind(this, function(menu, parent, methods)
 		{
 			for (var i = 0; i < methods.length; i++)
 			{
@@ -2804,7 +3244,7 @@
 				}
 				else
 				{
-					addInsertItem(menu, parent, mxResources.get(methods[i]) + '...', methods[i]);
+					editorUi.addInsertItem(menu, parent, mxResources.get(methods[i]) + '...', methods[i]);
 				}
 			}
 		});
@@ -2827,13 +3267,15 @@
 
 		this.put('insertLayout', new Menu(mxUtils.bind(this, function(menu, parent)
 		{
-			addInsertMenuItems(menu, parent, ['horizontalFlow', 'verticalFlow', '-', 'horizontalTree',
-				'verticalTree', 'radialTree', '-', 'organic', 'circle']);
+			editorUi.addInsertMenuItems(menu, parent, ['horizontalFlow',
+				'verticalFlow', '-', 'horizontalTree', 'verticalTree',
+				'radialTree', '-', 'organic', 'circle']);
 		})));
 
         this.put('insertAdvanced', new Menu(mxUtils.bind(this, function(menu, parent)
         {
-			addInsertMenuItems(menu, parent, ['fromText', 'plantUml', 'mermaid', '-', 'formatSql']);
+			editorUi.addInsertMenuItems(menu, parent, ['fromText',
+				'plantUml', 'mermaid', '-', 'formatSql']);
 			
 			menu.addItem(mxResources.get('csv') + '...', null, function()
 			{
@@ -2970,6 +3412,7 @@
 			}
 			
 			//if (!mxClient.IS_IOS)
+			if (urlParams['noDevice'] != '1')
 			{
 				menu.addItem(mxResources.get('device') + '...', null, function()
 				{
@@ -3074,7 +3517,7 @@
 						editorUi.showLibraryDialog(null, null, null, null, App.MODE_GITLAB);
 					}, parent);
 				}
-				
+
 				if (editorUi.trello != null)
 				{
 					menu.addItem(mxResources.get('trello') + '...', null, function()
@@ -3101,6 +3544,7 @@
 				}
 				
 				//if (!mxClient.IS_IOS)
+				if (urlParams['noDevice'] != '1')
 				{
 					menu.addItem(mxResources.get('device') + '...', null, function()
 					{
@@ -3176,7 +3620,7 @@
 						editorUi.pickLibrary(App.MODE_GITLAB);
 					}, parent);
 				}
-				
+
 				if (editorUi.trello != null)
 				{
 					menu.addItem(mxResources.get('trello') + '...', null, function()
@@ -3203,6 +3647,7 @@
 				}
 				
 				//if (!mxClient.IS_IOS)
+				if (urlParams['noDevice'] != '1')
 				{
 					menu.addItem(mxResources.get('device') + '...', null, function()
 					{
@@ -3332,6 +3777,8 @@
 		viewPanelsMenu.funct = function(menu, parent)
 		{
 			viewPanelsFunct.apply(this, arguments);
+
+			editorUi.menus.addMenuItems(menu, ['tags'], parent);
 			
 			if (editorUi.commentsSupported())
 			{
@@ -3343,7 +3790,7 @@
 		this.put('view', new Menu(mxUtils.bind(this, function(menu, parent)
 		{
 			this.addMenuItems(menu, ((this.editorUi.format != null) ? ['formatPanel'] : []).
-				concat(['outline', 'layers']).concat((editorUi.commentsSupported()) ?
+				concat(['outline', 'layers', 'tags']).concat((editorUi.commentsSupported()) ?
 				['comments', '-'] : ['-']));
 			
 			this.addMenuItems(menu, ['-', 'search'], parent);
@@ -3377,6 +3824,21 @@
 			}
 		})));
 		
+		if (EditorUi.isElectronApp)
+		{
+			var enableSpellCheck = urlParams['enableSpellCheck'] == '1';
+
+			var spellCheckAction = editorUi.actions.addAction('spellCheck', function()
+			{
+				editorUi.toggleSpellCheck();
+				enableSpellCheck = !enableSpellCheck;
+				editorUi.alert(mxResources.get('restartForChangeRequired'));
+			});
+			
+			spellCheckAction.setToggleAction(true);
+			spellCheckAction.setSelectedCallback(function() { return enableSpellCheck; });
+		}
+
 		this.put('extras', new Menu(mxUtils.bind(this, function(menu, parent)
 		{
 			if (urlParams['noLangIcon'] == '1')
@@ -3400,19 +3862,27 @@
 					this.addLinkToItem(item, 'https://www.diagrams.net/doc/faq/math-typesetting');
 				}
 			}
-			
-			this.addMenuItems(menu, ['copyConnect', 'collapseExpand', '-'], parent);
-			
-			if (urlParams['embed'] != '1' && (isLocalStorage || mxClient.IS_CHROMEAPP))
+	
+			if (EditorUi.isElectronApp)
 			{
-				this.addMenuItems(menu, ['showStartScreen'], parent);
+				this.addMenuItems(menu, ['spellCheck'], parent);	
 			}
 
+			this.addMenuItems(menu, ['copyConnect', 'collapseExpand', '-'], parent);
+			
 			if (urlParams['embed'] != '1')
 			{
+				var file = editorUi.getCurrentFile();
+
+				if (graph.isEnabled() && graph.isSelectionEmpty() && file != null &&
+					file.isRealtimeEnabled() && file.isRealtimeSupported())
+				{
+					this.addMenuItems(menu, ['shareCursor'], parent);
+				}
+
 				this.addMenuItems(menu, ['autosave'], parent);
 			}
-			
+
 			menu.addSeparator(parent);
 			
 			if (!editorUi.isOfflineApp() && isLocalStorage)
@@ -3420,14 +3890,21 @@
 				this.addMenuItem(menu, 'plugins', parent);
 			}
 
-			this.addMenuItems(menu, ['tags', '-', 'editDiagram'], parent);
+			this.addMenuItems(menu, ['-', 'editDiagram'], parent);
 	
 			if (Graph.translateDiagram)
 			{
 				this.addMenuItems(menu, ['diagramLanguage']);
 			}
 			
-			this.addMenuItems(menu, ['-', 'configuration'], parent);
+			menu.addSeparator(parent);
+
+			if (urlParams['embed'] != '1' && (isLocalStorage || mxClient.IS_CHROMEAPP))
+			{
+				this.addMenuItems(menu, ['showStartScreen'], parent);
+			}
+
+			this.addMenuItems(menu, ['configuration'], parent);
 			
 			// Adds trailing separator in case new plugin entries are added
 			menu.addSeparator(parent);
@@ -3436,49 +3913,54 @@
 			{
 				editorUi.actions.addAction('templates', function()
 				{
-					var tempDlg = new TemplatesDialog();
-					editorUi.showDialog(tempDlg.container, tempDlg.width, tempDlg.height, true, false, null, false, true);
-					tempDlg.init(editorUi, function(xml){console.log(xml)}, null,
-							null, null, 'user', function(callback, username)
+					function driveObjToTempDlg(item)
 					{
-						setTimeout(function(){
-							username? callback([
-								{url: '123', title: 'Test 1Test 1Test 1Test 1Test 1Test 1Test 11Test 1Test 11Test 1Test 1dgdsgdfg fdg dfgdfg dfg dfg'},
-								{url: '123', title: 'Test 2', imgUrl: 'https://www.google.com.eg/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png'},
-								{url: '123', title: 'Test 3', changedBy: 'Ashraf Teleb', lastModifiedOn: 'Yesterday'},
-								{url: '123', title: 'Test 4'},
-								{url: '123', title: 'Test 5'},
-								{url: '123', title: 'Test 6'}
-							]) : callback([
-								{url: '123', title: 'Test 4', imgUrl: 'https://images.pexels.com/photos/459225/pexels-photo-459225.jpeg'},
-								{url: '123', title: 'Test 5'},
-								{url: '123', title: 'Test 6'},
-								{url: '123', title: 'Test 1Test 1Test 1Test 1Test 1Test 1Test 11Test 1Test 11Test 1Test 1dgdsgdfg fdg dfgdfg dfg dfg'},
-								{url: '123', title: 'Test 2', imgUrl: 'https://www.google.com.eg/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png'},
-								{url: '123', title: 'Test 3', changedBy: 'Ashraf Teleb', lastModifiedOn: 'Yesterday'}
-							]);
-							console.log(username);
-						}, 1000);
-					}, function(str, callback, username)
+						return {id: item.id, isExt: true, url: item.downloadUrl, title: item.title, imgUrl: item.thumbnailLink,
+								changedBy: item.lastModifyingUserName, lastModifiedOn: item.modifiedDate}
+					};
+					
+					var tempDlg = new TemplatesDialog(editorUi, function(xml){console.log(arguments)}, null,
+							null, null, 'user', function(callback, error, username)
 					{
-						setTimeout(function(){
-							callback(username? [
-								{url: '123', title: str +'Test 1Test 1Test 1Test 1Test 1Test 1Test 1'},
-								{url: '123', title: str +'Test 2'},
-								{url: '123', title: str +'Test 3'},
-								{url: '123', title: str +'Test 4'},
-								{url: '123', title: str +'Test 5'},
-								{url: '123', title: str +'Test 6'}
-							]: [
-								{url: '123', title: str +'Test 5'},
-								{url: '123', title: str +'Test 6'},
-								{url: '123', title: str +'Test 1Test 1Test 1Test 1Test 1Test 1Test 1'},
-								{url: '123', title: str +'Test 2'},
-								{url: '123', title: str +'Test 3'},
-								{url: '123', title: str +'Test 4'}
-							]);
-						}, 2000);						
-					}, null);
+						var oneWeek = new Date();
+						oneWeek.setDate(oneWeek.getDate() - 7);
+						
+						editorUi.drive.listFiles(null, oneWeek, username? true : false, function(resp)
+						{
+							var results = [];
+							
+							for (var i = 0; i < resp.items.length; i++)
+							{
+								results.push(driveObjToTempDlg(resp.items[i]));
+							}
+							
+							callback(results);
+						}, error)
+					}, function(str, callback, error, username)
+					{
+						editorUi.drive.listFiles(str, null, username? true : false, function(resp)
+						{
+							var results = [];
+							
+							for (var i = 0; i < resp.items.length; i++)
+							{
+								results.push(driveObjToTempDlg(resp.items[i]));
+							}
+							
+							callback(results);
+						}, error)
+					}, function(obj, callback, error)
+					{
+						editorUi.drive.getFile(obj.id, function(file)
+						{
+							callback(file.data);
+						}, error);
+					}, null, function(callback)
+					{
+						callback({'Test': []}, 1);
+					}, true, false);
+					
+					editorUi.showDialog(tempDlg.container, window.innerWidth, window.innerHeight, true, false, null, false, true);
 				});
 				this.addMenuItem(menu, 'templates', parent);
 			}
@@ -3506,20 +3988,23 @@
 				
 				this.addMenuItems(menu, ['-', 'pageSetup', 'print', '-', 'rename'], parent);
 				
-				if (urlParams['noSaveBtn'] == '1')
+				if (urlParams['embedInline'] != '1')
 				{
-					if (urlParams['saveAndExit'] != '0')
+					if (urlParams['noSaveBtn'] == '1')
 					{
-						this.addMenuItems(menu, ['saveAndExit'], parent);
+						if (urlParams['saveAndExit'] != '0')
+						{
+							this.addMenuItems(menu, ['saveAndExit'], parent);
+						}
 					}
-				}
-				else
-				{
-					this.addMenuItems(menu, ['save'], parent);
-					
-					if (urlParams['saveAndExit'] == '1')
+					else
 					{
-						this.addMenuItems(menu, ['saveAndExit'], parent);
+						this.addMenuItems(menu, ['save'], parent);
+						
+						if (urlParams['saveAndExit'] == '1')
+						{
+							this.addMenuItems(menu, ['saveAndExit'], parent);
+						}
 					}
 				}
 				
@@ -3625,13 +4110,14 @@
 					this.addMenuItems(menu, ['-', 'revisionHistory'], parent);
 				}
 				
-				if (file != null && editorUi.fileNode != null)
+				if (file != null && editorUi.fileNode != null && urlParams['embedInline'] != '1')
 				{
 					var filename = (file.getTitle() != null) ?
 						file.getTitle() : editorUi.defaultFilename;
 					
-					if (!/(\.html)$/i.test(filename) &&
-						!/(\.svg)$/i.test(filename))
+					if ((file.constructor == DriveFile && file.sync != null &&
+						file.sync.isConnected()) || (!/(\.html)$/i.test(filename) &&
+						!/(\.svg)$/i.test(filename)))
 					{
 						this.addMenuItems(menu, ['-', 'properties']);
 					}
@@ -3699,7 +4185,7 @@
 		{
 			var addItem = mxUtils.bind(this, function(fontName, fontUrl, deletable, fontLabel, tooltip)
 			{
-				var graph = this.editorUi.editor.graph;
+				var graph = editorUi.editor.graph;
 
 				var tr = this.styleChange(menu, fontLabel || fontName,
 					(urlParams['ext-fonts'] != '1') ?
@@ -3718,6 +4204,13 @@
 						//Add the font to the file in case it was a previous font from the settings
 						graph.addExtFont(fontName, fontUrl);
 					}
+					
+					editorUi.fireEvent(new mxEventObject('styleChanged',
+						'keys', (urlParams['ext-fonts'] != '1') ?
+							[mxConstants.STYLE_FONTFAMILY, 'fontSource', 'FType'] : [mxConstants.STYLE_FONTFAMILY],
+						'values', (urlParams['ext-fonts'] != '1') ?
+							[fontName, (fontUrl != null) ? encodeURIComponent(fontUrl) : null, null] : [fontName],
+						'cells', [graph.cellEditor.getEditingCell()]));
 				}, function()
 				{
 					graph.updateLabelElements(graph.getSelectionCells(), function(elt)
@@ -4065,7 +4558,7 @@
 				{
 					selState = graph.cellEditor.saveSelection();
 				}
-		    	
+				
 				var dlg = new FontDialog(this.editorUi, curFontName, curUrl, curType, mxUtils.bind(this, function(fontName, fontUrl, type)
 				{
 					// Restores the selection state
@@ -4137,7 +4630,7 @@
 						}
 					}
 				}));
-				this.editorUi.showDialog(dlg.container, 380, 250, true, true);
+				this.editorUi.showDialog(dlg.container, 380, Editor.enableWebFonts ? 250 : 180, true, true);
 				dlg.init();
 			}), parent, null, true);
 		})));

@@ -552,6 +552,7 @@ Draw.loadPlugin(function(ui)
 		
 		var inner = this.container.querySelector('.geTitle'), urlInput = inner.querySelector('input[type="text"]'), urlCheck = urlInput.previousSibling;
 		
+		urlInput.style.width = '680px';
 		var lbl = document.createElement('div');
 		mxUtils.write(lbl, mxResources.get('confAnchor') + ':');
 		inner.appendChild(lbl);
@@ -583,7 +584,6 @@ Draw.loadPlugin(function(ui)
 		anchorRadio.style.cssText = 'margin-right:8px;margin-bottom:8px;';
 		anchorRadio.setAttribute('value', 'url');
 		anchorRadio.setAttribute('type', 'radio');
-		anchorRadio.setAttribute('name', 'current-linkdialog');
 		
 		var anchorSelect = document.createElement('select');
 		anchorSelect.style.marginTop = '6px';
@@ -666,8 +666,8 @@ Draw.loadPlugin(function(ui)
 			{
 				atts = atts.filter(function(a)
 				{
-					//Exclude draft files
-					return a.metadata.mediaType != 'application/vnd.jgraph.mxfile.cached'; 
+					//Exclude draft and temp files
+					return a.metadata.mediaType != 'application/vnd.jgraph.mxfile.cached' && !/^\~.+\.tmp$/.test(a.title); 
 				});
 					
 				for(var i = 0; i < atts.length; i++)
@@ -687,7 +687,20 @@ Draw.loadPlugin(function(ui)
 		
 		function setUrlValue(content)
 		{
-			urlInput.value = baseUrl + content._links.webui;
+			//Attachment webui link doesn't work, so build it
+			if (content.type == 'attachment')
+			{
+				var pageId = content._expandable.container.match(/\d+/)[0];
+				urlInput.value = baseUrl + '/pages/viewpageattachments.action?pageId='
+								+ pageId
+								+ '&preview=/' + pageId + '/' + content.id.replace('att', '') + '/'
+								+ encodeURIComponent(content.title);
+			}
+			else
+			{
+				urlInput.value = baseUrl + content._links.webui;
+			}
+			
 			urlCheck.checked = true;
 		};
 		
@@ -877,7 +890,7 @@ Draw.loadPlugin(function(ui)
 	ui.showLinkDialog = function(value, btnLabel, fn)
 	{
 		var dlg = new LinkDialog(this, value, btnLabel, fn, true);
-		this.showDialog(dlg.container, 700, 470, true, true);
+		this.showDialog(dlg.container, 710, 470, true, true);
 		dlg.init();
 	};
 	
@@ -1227,7 +1240,47 @@ Draw.loadPlugin(function(ui)
 		
 		return visible || cVisible;
 	};
-
+	
+	//Show custom templates in templates dialog
+	//Overriding the action here is too late as the ui button is created using the action function
+	//The solution is to override the NewDialog itself but it's tricky and hacky
+	var origNewDialog = NewDialog;
+	
+	NewDialog = function(editorUi, compact, showName, callback, createOnly, cancelCallback,
+		leftHighlight, rightHighlight, rightHighlightBorder, itemPadding, templateFile,
+		recentDocsCallback, searchDocsCallback, openExtDocCallback, showImport, createButtonLabel, customTempCallback, withoutType)
+	{
+		if (!showName && recentDocsCallback == null && 
+			searchDocsCallback == null && openExtDocCallback == null && customTempCallback == null)
+		{
+			openExtDocCallback = function(url, info, name) 
+			{
+				ui.remoteInvoke('getFileContent', [url], null, callback, function()
+				{
+					ui.showError(mxResources.get('error'), mxResources.get('cantReadChckPerms'), mxResources.get('ok'));
+				});
+			};
+			
+			customTempCallback = function(customTempCallback) 
+			{
+				ui.remoteInvoke('getCustomTemplates', null, null, customTempCallback, function()
+				{
+					customTempCallback({}, 0); //ignore error by sending empty templates
+				});
+			};
+		}
+		
+		origNewDialog.call(this, editorUi, compact, showName, callback, createOnly, cancelCallback,
+					leftHighlight, rightHighlight, rightHighlightBorder, itemPadding, templateFile,
+					recentDocsCallback, searchDocsCallback, openExtDocCallback, showImport, createButtonLabel, customTempCallback, withoutType);
+	};
+	
+	mxUtils.extend(NewDialog, origNewDialog);
+	
+	for (var key in origNewDialog)
+	{
+		NewDialog[key] = origNewDialog[key];
+	}
 	//=============Embed File with real-time collab support (based on remote invocation)
 	//Until app.min.js is propagated, this code is necessary
 	if (typeof EmbedFile === 'undefined')
@@ -1255,6 +1308,11 @@ Draw.loadPlugin(function(ui)
 	 * Delay for last save in ms.
 	 */
 	EmbedFile.prototype.saveDelay = 0;
+	
+	EmbedFile.prototype.isRevisionHistorySupported = function()
+	{
+		return true;
+	};
 
 	/**
 	 * 
@@ -1297,6 +1355,11 @@ Draw.loadPlugin(function(ui)
 		return this.isEditable() && DrawioFile.prototype.isEditable.apply(this, arguments);
 	};
 
+	EmbedFile.prototype.isRealtimeSupported = function()
+	{
+		return (xdm_e == 'https://drawio-rt.atlassian.net') || (xdm_e == 'https://team-drawio.atlassian.net');
+	};
+	
 	/**
 	 * 
 	 */
@@ -1432,6 +1495,8 @@ Draw.loadPlugin(function(ui)
 										
 										if (this.sync != null)
 										{
+											//Reduce number of retials since we already retry in AC.saveDraftWithFileDesc
+											this.sync.maxCatchupRetries = 2;
 											this.savingFile = true;
 											
 											this.sync.fileConflict(desc, mxUtils.bind(this, function()
@@ -1805,7 +1870,6 @@ Draw.loadPlugin(function(ui)
 		}
 	};
 	
-	var p2pCollab = null;
 	//Add file opening here (or it should be for all in EditorUi?)
 	var origInstallMessageHandler =  ui.installMessageHandler;
 	
@@ -1841,13 +1905,6 @@ Draw.loadPlugin(function(ui)
 					{
 						descriptorChangedListener();
 					}
-					
-					//RT Cursors
-					if (urlParams['rtCursors'] == '1' && p2pCollab != null)
-					{
-						p2pCollab.joinFile(file.getChannelId());
-						file.p2pCollab = p2pCollab;
-					}
 				}
 			});
 			
@@ -1859,10 +1916,4 @@ Draw.loadPlugin(function(ui)
 	{
 		//Cancel set modified of the editor and use the file's one
 	};
-	
-	//P2P RT
-	if (urlParams['rtCursors'] == '1')
-	{
-		p2pCollab = new P2PCollab(ui);
-	}
 });

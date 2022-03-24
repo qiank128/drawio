@@ -282,7 +282,7 @@ DriveClient.prototype.execute = function(fn)
 				fn();
 			}), mxUtils.bind(this, function(resp)
 			{
-				var msg = mxResources.get('cannotLogin');
+				var msg = (resp.message != null) ? resp.message : mxResources.get('cannotLogin');
 				
 				// Handles special domain policy errors
 				if (resp != null && resp.error != null)
@@ -732,6 +732,10 @@ DriveClient.prototype.authorizeStep2 = function(state, immediate, success, error
 				
 					popup.focus();
 				}
+				else if (error != null)
+				{
+					error({message: mxResources.get('allowPopups')});
+				}
 			}
 		}
 	}
@@ -936,6 +940,17 @@ DriveClient.prototype.loadDescriptor = function(id, success, error, fields)
 {
 	this.executeRequest({
 		url: '/files/' + id + '?supportsAllDrives=true&fields=' + (fields != null ? fields : this.allFields)
+	}, success, error);
+};
+
+DriveClient.prototype.listFiles = function(searchStr, afterDate, mineOnly, success, error)
+{
+	this.executeRequest({
+		url: '/files?supportsAllDrives=true&includeItemsFromAllDrives=true&q=' + encodeURIComponent('(mimeType contains \'' + this.xmlMimeType + '\') ' +
+		(searchStr? ' and (title contains \'' + searchStr + '\')' : '') +
+		(afterDate? ' and (modifiedDate > \'' + afterDate.toISOString() + '\')' : '') +
+		(mineOnly? ' and (\'me\' in owners)' : '')) +
+		'&orderBy=modifiedDate desc,title'
 	}, success, error);
 };
 
@@ -1164,7 +1179,7 @@ DriveClient.prototype.getXmlFile = function(resp, success, error, ignoreMime, re
 							
 							if (Graph.fileSupport && new XMLHttpRequest().upload && this.ui.isRemoteFileFormat(data, url))
 							{
-								this.ui.parseFile(new Blob([data], {type: 'application/octet-stream'}), mxUtils.bind(this, function(xhr)
+								this.ui.parseFileData(data, mxUtils.bind(this, function(xhr)
 								{
 									try
 									{
